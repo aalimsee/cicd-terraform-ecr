@@ -1,0 +1,82 @@
+
+
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [test, main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: lach
+  ACCOUNT_ID: 255945442255
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Set Image Tag
+        id: image_tag
+        run: |
+          ENV_NAME=""
+          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then ENV_NAME="dev"; fi
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then ENV_NAME="prod"; fi
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then ENV_NAME="test"; fi
+          echo "tag=${ENV_NAME}-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker Image
+        run: |
+          docker build -t $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:${{ steps.image_tag.outputs.tag }} .
+
+      - name: Push Docker Image to ECR
+        run: |
+          docker push $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:${{ steps.image_tag.outputs.tag }}
+
+  terraform-deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set Environment
+        id: env
+        run: |
+          ENV_NAME=""
+          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then ENV_NAME="dev"; fi
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then ENV_NAME="prod"; fi
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then ENV_NAME="test"; fi
+          echo "env=$ENV_NAME" >> $GITHUB_OUTPUT
+
+      - name: Terraform Init & Apply
+        working-directory: infra/${{ steps.env.outputs.env }}
+        run: |
+          terraform init -input=false
+          terraform workspace select ${{ steps.env.outputs.env }} || terraform workspace new ${{ steps.env.outputs.env }}
+          terraform apply -auto-approve
