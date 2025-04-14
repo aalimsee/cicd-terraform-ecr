@@ -74,6 +74,11 @@ jobs:
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then ENV_NAME="test"; fi
           echo "env=$ENV_NAME" >> $GITHUB_OUTPUT
 
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
       - name: Terraform Init & Apply
         working-directory: infra/${{ steps.env.outputs.env }}
         run: |
